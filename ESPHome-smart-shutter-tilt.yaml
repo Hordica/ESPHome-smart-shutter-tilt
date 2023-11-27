@@ -1,0 +1,188 @@
+esphome:
+  name: esphome-web-96a7e2
+  friendly_name: ESPHome-smart-shutter-tilt
+
+esp8266:
+  board: nodemcuv2
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "<YOUR KEY GOES HERE>"
+
+ota:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Esphome-Web-96A7E2"
+    password: "nGG2M7AeWYA5"
+
+captive_portal:
+
+globals:
+  - id: stepper_end_pos
+    type: int
+    restore_value: no
+    initial_value: "12345"
+
+# Cover configuration
+cover:
+  - platform: template
+    name: "Template Cover"
+    lambda: |-
+      if (id(end_stop_open).state) {
+        return COVER_OPEN;
+      } else {
+        return COVER_CLOSED;
+      }
+    open_action:
+      then:
+        - stepper.set_target:
+            id: my_stepper
+            target: 0
+    close_action:
+      then:
+        - stepper.set_target:
+            id: my_stepper
+            target: 6000
+    optimistic: true
+    #has_position: True
+    tilt_action:
+      then:
+        - logger.log:
+            format: "-----The tilt value is set to  %.1f"
+            args: [ 'tilt' ]
+        - if:
+            condition:
+              lambda: 'return tilt <= 0;'
+            then:
+              - number.set:
+                  id: protected_stepper_control
+                  value: -10000
+        - if:
+            condition:
+              lambda: 'return tilt >= 1;'
+            then:
+              - number.set:
+                  id: protected_stepper_control
+                  value: 10000              
+        - if:
+            condition:
+              lambda: 'return tilt > 0 && tilt < 1;'
+            then:
+              - number.set:
+                  id: protected_stepper_control
+                  value: !lambda |-
+                    return tilt*id(stepper_end_pos);
+        - logger.log:
+            format: "-----The protected stepper control is set to  %d"
+            args: [ 'id(protected_stepper_control).state' ]
+
+binary_sensor:
+  #Position closed sensor
+  - platform: gpio
+    id: end_stop_closed
+    name: "End stop - position closed"
+    pin:
+      number: D5
+      mode:
+        input: true
+        pullup: true    
+    filters:
+      - invert:
+    on_press:
+      then:
+      - stepper.report_position:
+          id: my_stepper
+          position: 0
+      # It's best to call set_target directly after report_position, so that the stepper doesn't move
+      - stepper.set_target:
+          id: my_stepper
+          target: 0
+      - logger.log: 
+          format: "Reached position closed. Setting stepper motor closed value to value %d"
+          args: [ 'id(my_stepper).current_position']   
+
+  #Position open sensor
+  - platform: gpio
+    id: end_stop_open
+    name: "End stop - position open"    
+    pin:
+      number: D6
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - invert:
+    on_press:
+      then:
+        - stepper.set_target:
+            id: my_stepper
+            target: !lambda 'return id(my_stepper).current_position;'        
+        - globals.set:
+            id: stepper_end_pos
+            value: !lambda 'return id(my_stepper).current_position;'            
+        - logger.log: 
+            format: "Reached position open. Setting stepper motor open value to value %d"
+            args: [ 'id(my_stepper).current_position']                          
+
+number:
+  - platform: template
+    id: direct_stepper_control
+    name: Direct stepper Control
+    min_value: 0
+    max_value: 4000
+    initial_value: 2000
+    step: 1
+    set_action:
+      then:
+        - stepper.set_target:
+            id: my_stepper
+            target: !lambda 'return x - 2000;'
+
+  - platform: template
+    id: protected_stepper_control
+    name: Protected stepper Control
+    min_value: -10000
+    max_value: 10000
+    initial_value: 0
+    step: 1
+    set_action:
+      if:
+        condition:
+          lambda: 'return ((x <= id(my_stepper).current_position) && (!id(end_stop_closed).state)) || ((x >= id(my_stepper).current_position) && (!id(end_stop_open).state));'
+        then:
+          - stepper.set_target:
+                id: my_stepper
+                target: !lambda 'return x;'
+          - logger.log:
+              format: "-----Setting stepper target position to %d"
+              args: [ 'id(my_stepper).target_position']    
+        else:
+          - logger.log:
+              format: "-----Not setting stepper target position becuase it it currently at an endstop%d"
+              args: [ 'id(my_stepper).target_position']         
+
+
+
+#Stepper motor
+stepper:
+  - platform: uln2003
+    id: my_stepper
+    pin_a: D0
+    pin_b: D1
+    pin_c: D2
+    pin_d: D3
+    max_speed: 250 steps/s
+    sleep_when_done: True
+
+    # Optional:
+    acceleration: inf
+    deceleration: inf
